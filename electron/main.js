@@ -1,11 +1,15 @@
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, ipcMain } from 'electron'
 import path from 'path'
 import { fileURLToPath } from 'url';
 import { screen } from 'electron'
-
+import { parsePaths } from './parsePaths.js'
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+ipcMain.handle('parse-paths', async (event, paths) => {
+  return await parsePaths(paths)
+})
 
 function createWindow () {
     const windowWidth = 400
@@ -20,7 +24,9 @@ function createWindow () {
         skipTaskbar: true,
         transparent: false,
         webPreferences: {
-          preload: path.join(__dirname, 'preload.js')
+          preload: path.join(__dirname, 'preload.js'),
+          contextIsolation: true,
+          nodeIntegration: false
         }
     })
 
