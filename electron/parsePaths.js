@@ -10,6 +10,8 @@ export async function parsePath(filePath) {
   const stats = statSync(filePath)
   const name = path.basename(filePath)
   const id = generateId()
+  // Store the absolute normalized path for files
+  const absolutePath = path.resolve(filePath)
 
   if (stats.isDirectory()) {
     const children = []
@@ -36,20 +38,24 @@ export async function parsePath(filePath) {
     } catch (err) {
       console.error(`Error reading file ${filePath}:`, err)
     }
-    return { id, name, type: 'file', content }
+    return { id, name, type: 'file', content, filePath: absolutePath }
   }
 }
 
 export async function parsePaths(paths) {
   const results = []
   for (const filePath of paths) {
-    if (existsSync(filePath)) {
+    // Normalize the path to handle both forward and backslashes
+    const normalizedPath = path.normalize(filePath)
+    if (existsSync(normalizedPath)) {
       try {
-        const node = await parsePath(filePath)
+        const node = await parsePath(normalizedPath)
         results.push(node)
       } catch (err) {
-        console.error(`Error parsing path ${filePath}:`, err)
+        console.error(`Error parsing path ${normalizedPath}:`, err)
       }
+    } else {
+      console.warn(`Path does not exist: ${normalizedPath}`)
     }
   }
   return results

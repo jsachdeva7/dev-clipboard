@@ -3,14 +3,48 @@ import path from 'path'
 import { fileURLToPath } from 'url';
 import { screen } from 'electron'
 import { existsSync } from 'fs'
+import fs from 'fs/promises'
 import { parsePaths } from './parsePaths.js'
+import { watchFile, unwatchFile, unwatchAll } from './fileWatcher.js'
 import http from 'http'
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+let mainWindow = null
+
 ipcMain.handle('parse-paths', async (event, paths) => {
   return await parsePaths(paths)
+})
+
+ipcMain.handle('watch-file', async (event, filePath) => {
+  // Normalize path for Windows
+  const normalizedPath = filePath.replace(/\\/g, '/')
+  watchFile(normalizedPath, async (changedPath) => {
+    try {
+      const content = await fs.readFile(changedPath, 'utf-8')
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('file-changed', { filePath: changedPath, content })
+      }
+    } catch (error) {
+      console.error(`Error reading changed file ${changedPath}:`, error)
+    }
+  })
+})
+
+ipcMain.handle('unwatch-file', async (event, filePath) => {
+  const normalizedPath = filePath.replace(/\\/g, '/')
+  unwatchFile(normalizedPath)
+})
+
+ipcMain.handle('read-file', async (event, filePath) => {
+  try {
+    const content = await fs.readFile(filePath, 'utf-8')
+    return { success: true, content }
+  } catch (error) {
+    console.error(`Error reading file ${filePath}:`, error)
+    return { success: false, error: error.message }
+  }
 })
 
 // Helper function to wait for Vite dev server to be ready
@@ -51,8 +85,8 @@ function waitForServer(url, maxAttempts = 30, delay = 1000) {
 }
 
 function createWindow () {
-    const windowWidth = 400
-    const windowHeight = 250
+    const windowWidth = 360
+    const windowHeight = 220
 
     const preloadPath = path.resolve(__dirname, 'preload.js')
     
@@ -80,6 +114,13 @@ function createWindow () {
     const x = screenWidth - windowWidth - 20
     const y = screenHeight - windowHeight - 20
     win.setPosition(x, y)
+    
+    mainWindow = win
+    
+    win.on('closed', () => {
+      unwatchAll()
+      mainWindow = null
+    })
 
   if (process.env.VITE_DEV_SERVER_URL) {
     // Wait for Vite dev server to be ready before loading

@@ -2,10 +2,67 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer utilities {
+  .btn-clean {
+    outline: none;
+    background: transparent !important;
+  }
+  .btn-clean:hover,
+  .btn-clean:focus,
+  .btn-clean:focus-visible,
+  .btn-clean:active {
+    outline: none;
+    border-color: transparent;
+    background: transparent !important;
+  }
+  .btn-clean:focus-visible {
+    outline: none;
+    outline-offset: 0;
+    box-shadow: none;
+  }
+  
+  /* Hide scrollbars */
+  .no-scrollbar {
+    -ms-overflow-style: none;  /* IE and Edge */
+    scrollbar-width: none;  /* Firefox */
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;  /* Chrome, Safari, Opera */
+  }
+  
+  /* Force move cursor during drag operations - use highest specificity */
+  body.dragging,
+  body.dragging *,
+  body.dragging *::before,
+  body.dragging *::after {
+    cursor: move !important;
+  }
+  body.dragging button,
+  body.dragging input,
+  body.dragging [style*="cursor"],
+  body.dragging [class*="cursor"],
+  body.dragging [draggable="true"],
+  body.dragging [draggable="true"] * {
+    cursor: move !important;
+  }
+  
+  /* Also set cursor on draggable elements themselves */
+  [draggable="true"] {
+    cursor: move !important;
+  }
+  
+  /* When dragging, override ALL cursor styles */
+  body.dragging {
+    cursor: move !important;
+  }
+}
+
 :root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
+  font-family: "Jost", sans-serif;
+  font-optical-sizing: auto;
   font-weight: 400;
+  font-style: normal;
+  line-height: 1.5;
 
   color-scheme: light dark;
   color: rgba(255, 255, 255, 0.87);
@@ -32,6 +89,20 @@ html, body {
   width: 100%;
   height: 100%;
   overflow: hidden;
+  font-family: "Jost", sans-serif;
+  font-optical-sizing: auto;
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar {
+  display: none;  /* Chrome, Safari, Opera */
+}
+
+#root {
+  width: 100%;
+  height: 100%;
 }
 
 body {

@@ -4,17 +4,27 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron')
 try {
   const fsAPI = {
     parseDroppedPaths: (paths) => {
-      console.log('parseDroppedPaths called with:', paths)
       return ipcRenderer.invoke('parse-paths', paths)
     },
     getFilePath: (file) => {
       try {
-        // Use webUtils.getPathForFile for File objects from drag and drop
-        return path
+        return webUtils.getPathForFile(file)
       } catch (error) {
         console.error('Error getting file path:', error)
         throw error
       }
+    },
+    watchFile: (filePath) => {
+      return ipcRenderer.invoke('watch-file', filePath)
+    },
+    unwatchFile: (filePath) => {
+      return ipcRenderer.invoke('unwatch-file', filePath)
+    },
+    onFileChanged: (callback) => {
+      ipcRenderer.on('file-changed', (event, data) => callback(data))
+    },
+    removeFileChangedListener: () => {
+      ipcRenderer.removeAllListeners('file-changed')
     },
   }
   
