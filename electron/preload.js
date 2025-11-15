@@ -26,6 +26,15 @@ try {
     removeFileChangedListener: () => {
       ipcRenderer.removeAllListeners('file-changed')
     },
+    zipDirectory: (nodes) => {
+      return ipcRenderer.invoke('zip-directory', nodes)
+    },
+    showItemInFolder: (filePath) => {
+      return ipcRenderer.invoke('show-item-in-folder', filePath)
+    },
+    closeWindow: () => {
+      ipcRenderer.send('close-window')
+    },
   }
   
   contextBridge.exposeInMainWorld("fsAPI", fsAPI)

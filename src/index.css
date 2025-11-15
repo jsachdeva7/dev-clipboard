@@ -21,40 +21,65 @@
     box-shadow: none;
   }
   
-  /* Hide scrollbars */
+  /* Thin, subtle scrollbars */
   .no-scrollbar {
-    -ms-overflow-style: none;  /* IE and Edge */
-    scrollbar-width: none;  /* Firefox */
+    scrollbar-width: thin;  /* Firefox - thin scrollbar */
+    scrollbar-color: rgba(156, 163, 175, 0.3) transparent;  /* Firefox - thumb and track */
+    scrollbar-gutter: auto;  /* Don't reserve extra space */
   }
   .no-scrollbar::-webkit-scrollbar {
-    display: none;  /* Chrome, Safari, Opera */
+    width: 2px;  /* Chrome, Safari, Opera - ultra thin width */
+    height: 2px;  /* For horizontal scrollbars */
+  }
+  .no-scrollbar::-webkit-scrollbar-track {
+    background: transparent;  /* Transparent track */
+    margin: 0;
+    padding: 0;
+  }
+  .no-scrollbar::-webkit-scrollbar-thumb {
+    background-color: rgba(156, 163, 175, 0.3);  /* Subtle gray thumb */
+    border-radius: 1px;  /* Rounded corners */
+  }
+  .no-scrollbar::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(156, 163, 175, 0.5);  /* Slightly more visible on hover */
+  }
+  .no-scrollbar::-webkit-scrollbar-button {
+    display: none !important;  /* Hide scrollbar arrows/buttons */
+    width: 0;
+    height: 0;
+  }
+  .no-scrollbar::-webkit-scrollbar-button:start:decrement,
+  .no-scrollbar::-webkit-scrollbar-button:end:increment {
+    display: none;
   }
   
-  /* Force move cursor during drag operations - use highest specificity */
+  /* Dark mode scrollbar */
+  .dark .no-scrollbar {
+    scrollbar-color: rgba(156, 163, 175, 0.2) transparent;  /* Firefox dark mode */
+  }
+  .dark .no-scrollbar::-webkit-scrollbar-thumb {
+    background-color: rgba(156, 163, 175, 0.2);  /* Dark mode thumb */
+  }
+  .dark .no-scrollbar::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(156, 163, 175, 0.4);  /* Dark mode hover */
+  }
+  
+  /* Force move cursor during drag operations only */
   body.dragging,
-  body.dragging *,
-  body.dragging *::before,
-  body.dragging *::after {
-    cursor: move !important;
-  }
-  body.dragging button,
-  body.dragging input,
-  body.dragging [style*="cursor"],
-  body.dragging [class*="cursor"],
-  body.dragging [draggable="true"],
-  body.dragging [draggable="true"] * {
+  body.dragging * {
     cursor: move !important;
   }
   
-  /* Also set cursor on draggable elements themselves */
-  [draggable="true"] {
+  /* Buttons should always show pointer cursor */
+  button {
+    cursor: pointer !important;
+  }
+  
+  /* Override for buttons during drag */
+  body.dragging button {
     cursor: move !important;
   }
   
-  /* When dragging, override ALL cursor styles */
-  body.dragging {
-    cursor: move !important;
-  }
 }
 
 :root {

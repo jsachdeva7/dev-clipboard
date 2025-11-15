@@ -1,10 +1,12 @@
 import React, { useCallback, useState, useEffect } from 'react'
 import { useFSStore, type FSNode } from './fsStore'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
-import { faFolderPlus, faRotateRight, faChevronDown, faChevronUp, faTrash, faCopy, faCheck } from '@fortawesome/free-solid-svg-icons'
+import { faFolderPlus, faRotateRight, faChevronDown, faChevronUp, faTrash, faCopy, faCheck, faFileZipper, faXmark } from '@fortawesome/free-solid-svg-icons'
 import ConfirmDialog from './components/ConfirmDialog'
 import { getFileIconPath } from './utils/fileIcons'
 import Switch from 'react-switch'
+import { ToastContainer, toast } from 'react-toastify'
+import type { ToastContentProps } from 'react-toastify'
 
 declare global {
   interface Window {
@@ -15,6 +17,9 @@ declare global {
       unwatchFile: (filePath: string) => Promise<void>
       onFileChanged: (callback: (data: { filePath: string, content: string }) => void) => void
       removeFileChangedListener: () => void
+      zipDirectory: (nodes: FSNode[]) => Promise<{ success: boolean, path?: string, error?: string }>
+      showItemInFolder: (filePath: string) => Promise<{ success: boolean, error?: string }>
+      closeWindow: () => void
     }
   }
 }
@@ -32,7 +37,45 @@ function FileIcon({ fileName, isFolder, isExpanded }: { fileName: string, isFold
   )
 }
 
-function FileNode({ node, onDragStart, onDragOver, dragOverFolderId, onDrop, updateNodeName, deleteNode, setNodeEditing, isSelected, onSelect, selectedIds, dropPosition, setDropPosition, draggedNodeId, siblingNodes, isDraggingExternal }: { 
+function CustomToast({ message, type, zipPath }: ToastContentProps & { message: string, type: 'success' | 'error', zipPath?: string }) {
+  const handleShowInExplorer = async (e: React.MouseEvent) => {
+    e.stopPropagation() // Prevent toast from closing when clicking the button
+    if (zipPath && window.fsAPI?.showItemInFolder) {
+      try {
+        await window.fsAPI.showItemInFolder(zipPath)
+      } catch (error) {
+        console.error('Error showing file in explorer:', error)
+      }
+    }
+  }
+
+  return (
+    <div className="flex items-center justify-center gap-3 px-7 py-3 whitespace-nowrap">
+      <div className={`w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 ${
+        type === 'success' ? 'bg-green-500' : 'bg-red-500'
+      }`}>
+        {type === 'success' ? (
+          <FontAwesomeIcon icon={faCheck} className="text-xs text-white" />
+        ) : (
+          <FontAwesomeIcon icon={faXmark} className="text-xs text-white" />
+        )}
+      </div>
+      <span className="text-sm font-medium flex-shrink-0 text-gray-900 dark:text-gray-100" style={{ fontFamily: '"Jost", sans-serif' }}>
+        {message}
+      </span>
+      {zipPath && (
+        <button 
+          onClick={handleShowInExplorer}
+          className="p-0.5 opacity-60 hover:opacity-100 transition-opacity text-xs text-gray-600 dark:text-gray-300 bg-gray-200 dark:bg-gray-700 rounded-md focus:outline-none focus:ring-0 border-none hover:border-none px-2 py-1"
+        >
+          Show in Explorer
+        </button>
+      )}
+    </div>
+  )
+}
+
+function FileNode({ node, onDragStart, onDragOver, dragOverFolderId, onDrop, updateNodeName, deleteNode, setNodeEditing, isSelected, onSelect, selectedIds, dropPosition, setDropPosition, draggedNodeId, siblingNodes, isDraggingExternal, setNodeExpanded }: { 
   node: FSNode
   onDragStart: (id: string) => void
   onDragOver: (id: string | null) => void
@@ -49,24 +92,70 @@ function FileNode({ node, onDragStart, onDragOver, dragOverFolderId, onDrop, upd
   draggedNodeId: string | null
   siblingNodes?: FSNode[]
   isDraggingExternal?: boolean
+  setNodeExpanded: (id: string, isExpanded: boolean) => void
 }) {
-  const [isExpanded, setIsExpanded] = React.useState(false)
+  const isExpanded = node.isExpanded ?? false
   const [editingName, setEditingName] = React.useState(node.name)
   const [clickTimer, setClickTimer] = React.useState<number | null>(null)
+  const [isDraggable, setIsDraggable] = React.useState(false)
+  const dragStartPosRef = React.useRef<{ x: number; y: number; time: number } | null>(null)
+  const dragThresholdRef = React.useRef<number | null>(null)
+  const clickTimerRef = React.useRef<number | null>(null)
+  const inputRef = React.useRef<HTMLInputElement>(null)
+  
+  // Truncate display name if it exceeds 30 characters
+  const MAX_NAME_LENGTH = 30
+  const displayName = node.name.length > MAX_NAME_LENGTH 
+    ? node.name.substring(0, MAX_NAME_LENGTH) + '...'
+    : node.name
   
   React.useEffect(() => {
     if (node.isEditing) {
       setEditingName(node.name)
+      // For folders, ensure they stay expanded when editing (only if they were already expanded)
+      // Don't auto-expand new folders (isExpanded is undefined for new folders)
+      if (node.type === 'folder' && node.isExpanded === true) {
+        // Keep it expanded - this is handled by the condition check
+        // We don't need to do anything here since it's already expanded
+      }
+      // For files, select everything except the extension when editing starts
+      if (node.type === 'file' && inputRef.current) {
+        // Use setTimeout to ensure the input is focused first
+        setTimeout(() => {
+          if (inputRef.current) {
+            const lastDotIndex = node.name.lastIndexOf('.')
+            if (lastDotIndex > 0) {
+              // There's an extension, select everything before it (from start to before the dot)
+              inputRef.current.setSelectionRange(0, lastDotIndex)
+            } else {
+              // No extension, select everything
+              inputRef.current.setSelectionRange(0, node.name.length)
+            }
+          }
+        }, 0)
+      }
+      // For folders, select the entire name when editing starts
+      if (node.type === 'folder' && inputRef.current) {
+        // Use setTimeout to ensure the input is focused first
+        setTimeout(() => {
+          if (inputRef.current) {
+            inputRef.current.setSelectionRange(0, node.name.length)
+          }
+        }, 0)
+      }
     }
-  }, [node.isEditing, node.name])
+  }, [node.isEditing, node.name, node.type, node.isExpanded, setNodeExpanded])
   
   React.useEffect(() => {
     return () => {
-      if (clickTimer !== null) {
-        clearTimeout(clickTimer)
+      if (clickTimerRef.current !== null) {
+        clearTimeout(clickTimerRef.current)
+      }
+      if (dragThresholdRef.current !== null) {
+        clearTimeout(dragThresholdRef.current)
       }
     }
-  }, [clickTimer])
+  }, [])
   
   const handleDragStart = (e: React.DragEvent) => {
     if (node.isEditing) {
@@ -82,12 +171,88 @@ function FileNode({ node, onDragStart, onDragOver, dragOverFolderId, onDrop, upd
     onDragStart(node.id)
   }
   
-  const handleMouseDown = () => {
-    // Add dragging class on mousedown to prepare cursor BEFORE drag starts
-    // This prevents any brief moment where cursor might flicker
-    if (!node.isEditing) {
-      document.body.classList.add('dragging')
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (node.isEditing) return
+    
+    // Record mouse position and time for drag detection
+    const startPos = { x: e.clientX, y: e.clientY, time: Date.now() }
+    dragStartPosRef.current = startPos
+    setIsDraggable(false)
+    
+    // Clear any existing drag threshold timer
+    if (dragThresholdRef.current !== null) {
+      clearTimeout(dragThresholdRef.current)
     }
+    
+    // Select immediately for instant feedback (unless modifier keys are held)
+    // Modifier key selections are handled in handleClick
+    if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
+      // Clear any existing click timer
+      if (clickTimerRef.current !== null) {
+        clearTimeout(clickTimerRef.current)
+      }
+      // Use a very short delay to allow the click event to fire first for double-click detection
+      // But make it short enough that selection feels immediate
+      const timer = window.setTimeout(() => {
+        onSelect(node.id, e)
+        clickTimerRef.current = null
+        setClickTimer(null)
+      }, 10)
+      clickTimerRef.current = timer
+      setClickTimer(timer)
+    }
+    
+    // Enable dragging after 150ms hold OR if mouse moves more than 5px
+    dragThresholdRef.current = window.setTimeout(() => {
+      if (dragStartPosRef.current && !node.isEditing) {
+        setIsDraggable(true)
+        document.body.classList.add('dragging')
+        // Cancel selection if we're enabling drag
+        if (clickTimerRef.current !== null) {
+          clearTimeout(clickTimerRef.current)
+          clickTimerRef.current = null
+          setClickTimer(null)
+        }
+      }
+    }, 100)
+  }
+  
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (node.isEditing || !dragStartPosRef.current) return
+    
+    // Check if mouse has moved more than 5px
+    const startPos = dragStartPosRef.current
+    const deltaX = Math.abs(e.clientX - startPos.x)
+    const deltaY = Math.abs(e.clientY - startPos.y)
+    const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY)
+    
+    if (distance > 5) {
+      // Mouse moved enough, enable dragging
+      if (dragThresholdRef.current !== null) {
+        clearTimeout(dragThresholdRef.current)
+        dragThresholdRef.current = null
+      }
+      setIsDraggable(true)
+      document.body.classList.add('dragging')
+      // Cancel selection if we're enabling drag
+      if (clickTimerRef.current !== null) {
+        clearTimeout(clickTimerRef.current)
+        clickTimerRef.current = null
+        setClickTimer(null)
+      }
+    }
+  }
+  
+  const handleMouseUp = () => {
+    // Clear drag state
+    dragStartPosRef.current = null
+    setIsDraggable(false)
+    if (dragThresholdRef.current !== null) {
+      clearTimeout(dragThresholdRef.current)
+      dragThresholdRef.current = null
+    }
+    // Remove dragging class if mouse is released without dragging
+    document.body.classList.remove('dragging')
   }
   
   const handleDragOver = (e: React.DragEvent) => {
@@ -238,8 +403,9 @@ function FileNode({ node, onDragStart, onDragOver, dragOverFolderId, onDrop, upd
   }
   
   const handleDoubleClick = (e: React.MouseEvent) => {
-    if (clickTimer !== null) {
-      clearTimeout(clickTimer)
+    if (clickTimerRef.current !== null) {
+      clearTimeout(clickTimerRef.current)
+      clickTimerRef.current = null
       setClickTimer(null)
     }
     if (node.type === 'folder' && !node.isEditing) {
@@ -250,23 +416,29 @@ function FileNode({ node, onDragStart, onDragOver, dragOverFolderId, onDrop, upd
   
   const handleClick = (e: React.MouseEvent) => {
     if (!node.isEditing && !e.defaultPrevented) {
-      // For Ctrl/Cmd or Shift clicks, handle immediately
-      if (e.ctrlKey || e.metaKey || e.shiftKey) {
-        onSelect(node.id, e)
-      } else {
-        // For regular clicks, delay to allow double-click detection
-        const timer = window.setTimeout(() => {
+      // Only handle selection if we didn't just drag
+      // If isDraggable is true, it means we were dragging, so don't select
+      if (!isDraggable) {
+        // For Ctrl/Cmd or Shift clicks, handle immediately
+        if (e.ctrlKey || e.metaKey || e.shiftKey) {
+          // Cancel any pending selection from mousedown
+          if (clickTimerRef.current !== null) {
+            clearTimeout(clickTimerRef.current)
+            clickTimerRef.current = null
+            setClickTimer(null)
+          }
           onSelect(node.id, e)
-          setClickTimer(null)
-        }, 200)
-        setClickTimer(timer)
+        }
+        // For regular clicks, selection is already handled in mousedown
+        // The click event is mainly for double-click detection
       }
     }
   }
   
   const handleFileDoubleClick = () => {
-    if (clickTimer !== null) {
-      clearTimeout(clickTimer)
+    if (clickTimerRef.current !== null) {
+      clearTimeout(clickTimerRef.current)
+      clickTimerRef.current = null
       setClickTimer(null)
     }
     if (node.type === 'file') {
@@ -283,6 +455,7 @@ function FileNode({ node, onDragStart, onDragOver, dragOverFolderId, onDrop, upd
           <div className="flex items-center gap-2 px-1 py-0 rounded h-6">
             <FileIcon fileName={node.name} isFolder={true} />
             <input
+              ref={inputRef}
               type="text"
               value={editingName}
               onChange={(e) => setEditingName(e.target.value)}
@@ -292,8 +465,41 @@ function FileNode({ node, onDragStart, onDragOver, dragOverFolderId, onDrop, upd
               className="px-1 py-0 text-sm border-none rounded bg-transparent dark:bg-transparent dark:text-gray-100 focus:outline-none focus:ring-0 focus:border-none placeholder:text-gray-400 dark:placeholder:text-gray-500 m-0"
               style={{ WebkitAppRegion: 'no-drag', border: 'none', outline: 'none', boxShadow: 'none', padding: '0', margin: '0' } as React.CSSProperties}
               autoFocus
+              spellCheck={false}
             />
           </div>
+          {/* Keep children visible when editing if folder is expanded */}
+          {isExpanded && node.children && (
+            <div 
+              className="ml-4 mt-1"
+              onDrop={onDrop}
+              onDragOver={handleDragOver}
+              data-folder-id={node.id}
+            >
+              {node.children.map((child) => (
+                <FileNode 
+                  key={child.id} 
+                  node={child}
+                  onDragStart={onDragStart}
+                  onDragOver={onDragOver}
+                  dragOverFolderId={dragOverFolderId}
+                  onDrop={onDrop}
+                  updateNodeName={updateNodeName}
+                  deleteNode={deleteNode}
+                  setNodeEditing={setNodeEditing}
+                  isSelected={selectedIds.has(child.id)}
+                  onSelect={onSelect}
+                  selectedIds={selectedIds}
+                  dropPosition={dropPosition}
+                  setDropPosition={setDropPosition}
+                  draggedNodeId={draggedNodeId}
+                  siblingNodes={node.children}
+                  isDraggingExternal={isDraggingExternal}
+                  setNodeExpanded={setNodeExpanded}
+                />
+              ))}
+            </div>
+          )}
         </div>
       )
     }
@@ -306,17 +512,27 @@ function FileNode({ node, onDragStart, onDragOver, dragOverFolderId, onDrop, upd
         className="mb-1 relative" 
         data-node-id={node.id}
       >
-        {showDropIndicatorBefore && (
-          <div className="absolute top-0 left-0 right-0 h-0.5 bg-blue-500 dark:bg-blue-400 -translate-y-full z-10" />
-        )}
+          {showDropIndicatorBefore && (
+            <div className="absolute top-0 left-0 right-0 h-px bg-blue-200 dark:bg-blue-900/10 -translate-y-full z-10" />
+          )}
         <div 
-          className={`flex items-center gap-2 px-1 pr-0 py-0 rounded h-6 ${isDragOver ? 'bg-blue-100 dark:bg-blue-900/30' : ''} ${isSelected ? 'bg-blue-50 dark:bg-gray-800' : 'hover:bg-gray-100 dark:hover:bg-gray-700'}`}
-          draggable={!node.isEditing}
+        className={`flex items-center gap-2 px-1 pr-0 py-0 rounded h-6 ${isDragOver ? 'bg-blue-100 dark:bg-blue-900/30' : ''} ${isSelected ? 'bg-blue-50 dark:bg-gray-800' : 'hover:bg-gray-100 dark:hover:bg-gray-700'}`}
+        draggable={isDraggable && !node.isEditing}
+        style={{ cursor: node.isEditing ? 'text' : 'pointer' } as React.CSSProperties}
           onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
           onDragStart={handleDragStart}
           onDragEnd={() => {
             // Remove CSS class when drag ends (even if cancelled)
             document.body.classList.remove('dragging')
+            // Reset drag state
+            setIsDraggable(false)
+            dragStartPosRef.current = null
+            if (dragThresholdRef.current !== null) {
+              clearTimeout(dragThresholdRef.current)
+              dragThresholdRef.current = null
+            }
           }}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
@@ -324,15 +540,15 @@ function FileNode({ node, onDragStart, onDragOver, dragOverFolderId, onDrop, upd
           data-folder-id={node.id}
           onClick={handleClick}
         >
-            <span className="cursor-pointer flex-1 flex items-center gap-2" onDoubleClick={handleDoubleClick}>
+            <span className="flex-1 flex items-center gap-2" onDoubleClick={handleDoubleClick}>
             <FileIcon fileName={node.name} isFolder={true} isExpanded={isExpanded} />
-            <span className="text-sm text-gray-900 dark:text-gray-100">{node.name}</span>
+            <span className="text-sm text-gray-900 dark:text-gray-100" title={node.name}>{displayName}</span>
           </span>
           <button
-            onClick={(e) => {
-              e.stopPropagation()
-              setIsExpanded(!isExpanded)
-            }}
+              onClick={(e) => {
+                e.stopPropagation()
+                setNodeExpanded(node.id, !isExpanded)
+              }}
             className="btn-clean opacity-60 hover:opacity-100 transition-opacity bg-transparent flex items-center justify-center -mr-2"
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
@@ -368,12 +584,13 @@ function FileNode({ node, onDragStart, onDragOver, dragOverFolderId, onDrop, upd
                   draggedNodeId={draggedNodeId}
                   siblingNodes={node.children}
                   isDraggingExternal={isDraggingExternal}
+                  setNodeExpanded={setNodeExpanded}
                 />
               ))}
           </div>
         )}
         {showDropIndicatorAfter && (
-          <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-500 dark:bg-blue-400 translate-y-full z-10" />
+          <div className="absolute bottom-0 left-0 right-0 h-px bg-blue-200 dark:dark:bg-blue-900/10 translate-y-full z-10" />
         )}
       </div>
     )
@@ -385,14 +602,16 @@ function FileNode({ node, onDragStart, onDragOver, dragOverFolderId, onDrop, upd
           <div className="flex items-center gap-2 px-1 py-0 rounded h-6">
             <FileIcon fileName={node.name} isFolder={false} />
             <input
+            ref={inputRef}
             type="text"
             value={editingName}
             onChange={(e) => setEditingName(e.target.value)}
             onBlur={handleNameSubmit}
             onKeyDown={handleNameKeyDown}
-            className="px-1 py-0 text-sm border border-blue-500 dark:border-blue-400 rounded bg-white dark:bg-gray-800 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:focus:ring-blue-400"
+            className="px-1 py-0 text-sm border-none rounded bg-transparent dark:bg-transparent dark:text-gray-100 focus:outline-none focus:ring-0 focus:border-none placeholder:text-gray-400 dark:placeholder:text-gray-500 m-0"
             autoFocus
-            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+            style={{ WebkitAppRegion: 'no-drag', border: 'none', outline: 'none', boxShadow: 'none', padding: '0', margin: '0' } as React.CSSProperties}
+            spellCheck={false}
           />
         </div>
       </div>
@@ -407,13 +626,16 @@ function FileNode({ node, onDragStart, onDragOver, dragOverFolderId, onDrop, upd
       className="mb-1 relative" 
       data-node-id={node.id}
     >
-      {showDropIndicatorBefore && (
-        <div className="absolute top-0 left-0 right-0 h-0.5 bg-blue-500 dark:bg-blue-400 -translate-y-full z-10" />
-      )}
+          {showDropIndicatorBefore && (
+            <div className="absolute top-0 left-0 right-0 h-px bg-blue-200 dark:bg-blue-900/10 -translate-y-full z-10" />
+          )}
       <div 
-        className={`flex items-center gap-2 px-1 py-0 rounded cursor-move h-6 ${isSelected ? 'bg-blue-50 dark:bg-gray-800' : 'hover:bg-gray-100 dark:hover:bg-gray-700'}`}
-        draggable
+        className={`flex items-center gap-2 px-1 py-0 rounded h-6 ${isSelected ? 'bg-blue-50 dark:bg-gray-800' : 'hover:bg-gray-100 dark:hover:bg-gray-700'}`}
+        draggable={isDraggable}
+        style={{ cursor: 'pointer' } as React.CSSProperties}
         onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
         onDragStart={handleDragStart}
         onDragEnd={() => {
           // Remove CSS class when drag ends (even if cancelled)
@@ -425,10 +647,10 @@ function FileNode({ node, onDragStart, onDragOver, dragOverFolderId, onDrop, upd
         onClick={handleClick}
       >
         <FileIcon fileName={node.name} isFolder={false} />
-        <span className="text-sm text-gray-900 dark:text-gray-100">{node.name}</span>
+        <span className="text-sm text-gray-900 dark:text-gray-100" title={node.name}>{displayName}</span>
       </div>
       {showDropIndicatorAfter && (
-        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-500 dark:bg-blue-400 translate-y-full z-10" />
+        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-200 dark:bg-blue-900/10 translate-y-full z-10" />
       )}
     </div>
   )
@@ -484,65 +706,80 @@ function getFileLanguage(fileName: string): string {
 }
 
 function generateStructuredOutput(nodes: FSNode[]): string {
-  let output = ''
+  const treeLines: string[] = []
+  const fileContents: Array<{ path: string, content: string, language: string }> = []
   
-  // First, generate folder structure
-  const folderStructure: string[] = []
-  const files: Array<{ path: string[], name: string, content: string }> = []
-  
-  function traverseStructure(node: FSNode, path: string[], indent: string = '') {
-    if (node.type === 'folder') {
-      // Root folders don't need |-- prefix, nested ones do
-      const displayName = path.length === 0 ? node.name : `${indent}|-- ${node.name}`
-      folderStructure.push(displayName)
-      
-      if (node.children && node.children.length > 0) {
-        const newIndent = indent + (path.length === 0 ? '' : '  ')
-        const newPath = [...path, node.name]
-        node.children.forEach((child) => {
-          traverseStructure(child, newPath, newIndent)
-        })
+  // First pass: build tree structure
+  function buildTree(node: FSNode, prefix: string = '', isLast: boolean = true, isRoot: boolean = true, parentPath: string = '') {
+    const currentPath = parentPath ? `${parentPath}/${node.name}` : node.name
+    
+    if (isRoot) {
+      if (node.type === 'folder') {
+        treeLines.push(`${node.name}/`)
+      } else {
+        treeLines.push(node.name)
+        // Collect file content
+        if (node.content !== undefined && node.content !== null) {
+          fileContents.push({
+            path: `/${currentPath}`,
+            content: node.content,
+            language: getFileLanguage(node.name)
+          })
+        }
       }
     } else {
-      files.push({
-        path: path,
-        name: node.name,
-        content: node.content || ''
+      const connector = isLast ? '└──' : '├──'
+      const name = node.type === 'folder' ? `${node.name}/` : node.name
+      treeLines.push(`${prefix}${connector} ${name}`)
+      
+      // Collect file content
+      if (node.type === 'file' && node.content !== undefined && node.content !== null) {
+        fileContents.push({
+          path: `/${currentPath}`,
+          content: node.content,
+          language: getFileLanguage(node.name)
+        })
+      }
+    }
+    
+    // Process children if it's a folder
+    if (node.type === 'folder' && node.children && node.children.length > 0) {
+      const children = node.children
+      const newPrefix = isRoot ? '' : (isLast ? prefix + '    ' : prefix + '│   ')
+      
+      children.forEach((child, index) => {
+        const isLastChild = index === children.length - 1
+        buildTree(child, newPrefix, isLastChild, false, currentPath)
       })
     }
   }
   
-  nodes.forEach((node) => {
-    traverseStructure(node, [], '')
+  // Build tree structure
+  nodes.forEach((node, index) => {
+    const isLast = index === nodes.length - 1
+    buildTree(node, '', isLast, true)
   })
   
-  // Add folder structure to output
-  if (folderStructure.length > 0) {
-    output += 'FOLDER STRUCTURE:\n'
-    output += folderStructure.join('\n')
-    output += '\n\n'
-  }
+  // Combine tree and file contents
+  const result: string[] = []
+  result.push(...treeLines)
   
-  // Add files with contents
-  if (files.length > 0) {
-    output += 'FILES:\n'
-    output += '='.repeat(80) + '\n\n'
-    
-    files.forEach((file, index) => {
-      const language = getFileLanguage(file.name)
-      
-      output += `${file.name} (${language})\n`
-      output += '-'.repeat(80) + '\n'
-      output += file.content
-      output += '\n'
-      
-      if (index < files.length - 1) {
-        output += '\n' + '='.repeat(80) + '\n\n'
+  // Add file contents after tree
+  if (fileContents.length > 0) {
+    result.push('') // Empty line separator
+    fileContents.forEach(({ path, content, language }, index) => {
+      result.push(path)
+      result.push(`\`\`\`${language}`)
+      result.push(content)
+      result.push('```')
+      // Add empty line between files, but not after the last one
+      if (index < fileContents.length - 1) {
+        result.push('')
       }
     })
   }
   
-  return output
+  return result.join('\n')
 }
 
 export default function App() {
@@ -557,6 +794,8 @@ export default function App() {
   const moveNodeToFolder = useFSStore(s => s.moveNodeToFolder)
   const moveNodeToPosition = useFSStore(s => s.moveNodeToPosition)
   const updateFileContent = useFSStore(s => s.updateFileContent)
+  const findNodeById = useFSStore(s => s.findNodeById)
+  const setNodeExpanded = useFSStore(s => s.setNodeExpanded)
   const [isDragging, setIsDragging] = useState(false)
   const [fsAPIAvailable, setFsAPIAvailable] = useState(false)
   const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null)
@@ -571,6 +810,7 @@ export default function App() {
     return document.documentElement.classList.contains('dark')
   })
   const [copySuccess, setCopySuccess] = useState(false)
+  const [zipSuccess, setZipSuccess] = useState(false)
   
   // Toggle dark mode class on html element
   useEffect(() => {
@@ -634,7 +874,7 @@ export default function App() {
       document.removeEventListener('drop', handleGlobalDrop, true)
     }
   }, [])
-  
+
   // Check if fsAPI is available on mount
   React.useEffect(() => {
     const checkAPI = () => {
@@ -953,6 +1193,29 @@ export default function App() {
   
   const clear = useFSStore(s => s.clear)
   const handleCreateFolder = () => {
+    // Check if exactly one folder is selected
+    if (selectedIds.size === 1) {
+      const selectedId = Array.from(selectedIds)[0]
+      const selectedNode = findNodeById(selectedId)
+      
+      // If the selected node is a folder, create the new folder inside it
+      if (selectedNode && selectedNode.type === 'folder') {
+        const newFolder: FSNode = {
+          id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          name: '',
+          type: 'folder',
+          children: [],
+          isEditing: true,
+          isExpanded: false  // New folders should start collapsed
+        }
+        addNodesToFolder([newFolder], selectedId)
+        // Expand the parent folder so the new folder is visible
+        setNodeExpanded(selectedId, true)
+        return
+      }
+    }
+    
+    // Otherwise, create folder at root level
     createFolderForEditing()
   }
   
@@ -991,6 +1254,55 @@ export default function App() {
       }, 2000)
     } catch (error) {
       console.error('Failed to copy to clipboard:', error)
+    }
+  }
+  
+  const handleZipDirectory = async () => {
+    if (nodes.length === 0) return
+    
+    try {
+      const result = await window.fsAPI.zipDirectory(nodes)
+      if (result.success && result.path) {
+        toast((props) => <CustomToast {...props} message="Zipped successfully!" type="success" zipPath={result.path} />, {
+          position: "bottom-center",
+          autoClose: 5000,
+          hideProgressBar: true,
+          closeOnClick: true,
+          closeButton: false,
+          pauseOnHover: true,
+          pauseOnFocusLoss: false,
+          draggable: false,
+          className: 'p-0',
+        })
+        setZipSuccess(true)
+        setTimeout(() => setZipSuccess(false), 5000)
+      } else {
+        toast((props) => <CustomToast {...props} message={`Failed to create zip`} type="error" />, {
+          position: "bottom-center",
+          autoClose: 5000,
+          hideProgressBar: true,
+          closeOnClick: true,
+          closeButton: false,
+          pauseOnHover: true,
+          pauseOnFocusLoss: false,
+          draggable: false,
+          className: 'p-0',
+        })
+        console.error('Failed to create zip:', result.error)
+      }
+    } catch (error) {
+      toast((props) => <CustomToast {...props} message={`Error zipping directory: ${error instanceof Error ? error.message : 'Unknown error'}`} type="error" />, {
+        position: "bottom-center",
+        autoClose: 5000,
+        hideProgressBar: true,
+        closeOnClick: true,
+        closeButton: false,
+        pauseOnHover: true,
+        pauseOnFocusLoss: false,
+        draggable: false,
+        className: 'p-0',
+      })
+      console.error('Error zipping directory:', error)
     }
   }
   
@@ -1098,61 +1410,80 @@ export default function App() {
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
         <span className="text-xs font-medium text-gray-600 dark:text-gray-300 ml-[1px]">FILES</span>
-        <div className="flex items-center gap-0 mr-[1px]">
-          <button
-            onClick={handleCreateFolder}
-            className="btn-clean p-0.5 opacity-60 hover:opacity-100 transition-opacity"
-            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-            title="New Folder"
-          >
-            <FontAwesomeIcon icon={faFolderPlus} className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 text-sm" />
-          </button>
-          <button
-            onClick={handleDeleteSelected}
-            disabled={selectedIds.size === 0}
-            className="btn-clean p-0.5 opacity-60 hover:opacity-100 transition-opacity disabled:opacity-30"
-            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-            title="Delete Selected"
-          >
-            <FontAwesomeIcon icon={faTrash} className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 text-sm" />
-          </button>
-          <button
-            onClick={handleClear}
-            className="btn-clean p-0.5 opacity-60 hover:opacity-100 transition-opacity"
-            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-            title="Clear All"
-          >
-            <FontAwesomeIcon icon={faRotateRight} className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 text-sm" />
-          </button>
-          <button
-            onClick={handleCopyToClipboard}
-            disabled={nodes.length === 0}
-            className="btn-clean p-0.5 opacity-60 hover:opacity-100 transition-opacity disabled:opacity-30"
-            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-            title="Copy All to Clipboard"
-          >
-            <FontAwesomeIcon icon={copySuccess ? faCheck : faCopy} className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 text-sm" />
-          </button>
-          <div style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties} className="ml-2 flex items-center">
-            <Switch
-              onChange={(checked) => setIsDarkMode(checked)}
-              checked={isDarkMode}
-              onColor="#374151"
-              offColor="#D1D5DB"
-              onHandleColor="#ffffff"
-              offHandleColor="#ffffff"
-              handleDiameter={12}
-              uncheckedIcon={false}
-              checkedIcon={false}
-              boxShadow="0px 1px 3px rgba(0, 0, 0, 0.2)"
-              activeBoxShadow="0px 1px 3px rgba(0, 0, 0, 0.2)"
-              height={14}
-              width={28}
-              className="react-switch"
-              checkedHandleIcon={null}
-              uncheckedHandleIcon={null}
-            />
+        <div className="flex items-center gap-[25px] mr-[1px]">
+          <div className="flex items-center gap-0">
+            <button
+              onClick={handleCreateFolder}
+              className="btn-clean p-0.5 opacity-60 hover:opacity-100 transition-opacity"
+              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+              title="New Folder"
+            >
+              <FontAwesomeIcon icon={faFolderPlus} className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 text-sm" />
+            </button>
+            <button
+              onClick={handleDeleteSelected}
+              disabled={selectedIds.size === 0}
+              className="btn-clean p-0.5 opacity-60 hover:opacity-100 transition-opacity disabled:opacity-30"
+              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+              title="Delete Selected"
+            >
+              <FontAwesomeIcon icon={faTrash} className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 text-sm" />
+            </button>
+            <button
+              onClick={handleClear}
+              className="btn-clean p-0.5 opacity-60 hover:opacity-100 transition-opacity"
+              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+              title="Clear All"
+            >
+              <FontAwesomeIcon icon={faRotateRight} className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 text-sm" />
+            </button>
+            <button
+              onClick={handleCopyToClipboard}
+              disabled={nodes.length === 0}
+              className="btn-clean p-0.5 opacity-60 hover:opacity-100 transition-opacity disabled:opacity-30"
+              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+              title="Copy All to Clipboard"
+            >
+              <FontAwesomeIcon icon={copySuccess ? faCheck : faCopy} className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 text-sm" />
+            </button>
+            <button
+              onClick={handleZipDirectory}
+              disabled={nodes.length === 0}
+              className="btn-clean p-0.5 opacity-60 hover:opacity-100 transition-opacity disabled:opacity-30"
+              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+              title="Zip Directory"
+            >
+              <FontAwesomeIcon icon={zipSuccess ? faCheck : faFileZipper} className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 text-sm" />
+            </button>
+            <div style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties} className="ml-2 flex items-center">
+              <Switch
+                onChange={(checked) => setIsDarkMode(checked)}
+                checked={isDarkMode}
+                onColor="#374151"
+                offColor="#D1D5DB"
+                onHandleColor="#ffffff"
+                offHandleColor="#ffffff"
+                handleDiameter={12}
+                uncheckedIcon={false}
+                checkedIcon={false}
+                boxShadow="0px 1px 3px rgba(0, 0, 0, 0.2)"
+                activeBoxShadow="0px 1px 3px rgba(0, 0, 0, 0.2)"
+                height={14}
+                width={28}
+                className="react-switch"
+                checkedHandleIcon={null}
+                uncheckedHandleIcon={null}
+              />
+            </div>
           </div>
+          <button
+            onClick={() => window.fsAPI.closeWindow()}
+            className="btn-clean p-0.5 opacity-60 hover:opacity-100 transition-opacity"
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+            title="Close"
+          >
+            <FontAwesomeIcon icon={faXmark} className="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 text-sm" />
+          </button>
         </div>
       </div>
       <div 
@@ -1217,6 +1548,7 @@ export default function App() {
                 draggedNodeId={draggedNodeId}
                 siblingNodes={nodes}
                 isDraggingExternal={isDraggingExternal}
+                setNodeExpanded={setNodeExpanded}
               />
             ))
         )}
@@ -1229,6 +1561,14 @@ export default function App() {
         cancelText="Cancel"
         onConfirm={handleConfirmClear}
         onCancel={handleCancelClear}
+      />
+      <ToastContainer
+        position="bottom-center"
+        autoClose={5000}
+        hideProgressBar={true}
+        closeOnClick={true}
+        pauseOnHover={true}
+        pauseOnFocusLoss={false}
       />
     </div>
   )

@@ -8,6 +8,7 @@ export type FSNode = {
   filePath?: string
   children?: FSNode[]
   isEditing?: boolean
+  isExpanded?: boolean
 }
 
 interface FSStore {
@@ -30,6 +31,7 @@ interface FSStore {
   removeNodeFromTree: (id: string, nodes: FSNode[]) => FSNode[]
   addNodeToFolder: (node: FSNode, folderId: string | null, nodes: FSNode[]) => FSNode[]
   updateFileContent: (filePath: string, content: string) => void
+  setNodeExpanded: (id: string, isExpanded: boolean) => void
 }
 
 function generateId() {
@@ -65,7 +67,8 @@ export const useFSStore = create<FSStore>((set, get) => ({
       name: '',
       type: 'folder',
       children: [],
-      isEditing: true
+      isEditing: true,
+      isExpanded: false  // New folders should start collapsed
     }
     set(s => ({ nodes: [...s.nodes, newFolder] }))
     return newFolder.id
@@ -248,6 +251,21 @@ export const useFSStore = create<FSStore>((set, get) => ({
         const normalizedNodePath = node.filePath?.replace(/\\/g, '/')
         if (normalizedNodePath === normalizedFilePath && node.type === 'file') {
           return { ...node, content }
+        }
+        if (node.children) {
+          return { ...node, children: updateNode(node.children) }
+        }
+        return node
+      })
+    }
+    set(s => ({ nodes: updateNode(s.nodes) }))
+  },
+  
+  setNodeExpanded: (id, isExpanded) => {
+    const updateNode = (nodes: FSNode[]): FSNode[] => {
+      return nodes.map(node => {
+        if (node.id === id) {
+          return { ...node, isExpanded }
         }
         if (node.children) {
           return { ...node, children: updateNode(node.children) }

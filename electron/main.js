@@ -1,17 +1,20 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain, clipboard, shell } from 'electron'
 import path from 'path'
 import { fileURLToPath } from 'url';
 import { screen } from 'electron'
-import { existsSync } from 'fs'
+import { existsSync, createWriteStream, unlinkSync } from 'fs'
 import fs from 'fs/promises'
 import { parsePaths } from './parsePaths.js'
 import { watchFile, unwatchFile, unwatchAll } from './fileWatcher.js'
 import http from 'http'
+import archiver from 'archiver'
+import os from 'os'
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 let mainWindow = null
+const tempZipFiles = new Set() // Track temp zip files for cleanup
 
 ipcMain.handle('parse-paths', async (event, paths) => {
   return await parsePaths(paths)
@@ -37,12 +40,80 @@ ipcMain.handle('unwatch-file', async (event, filePath) => {
   unwatchFile(normalizedPath)
 })
 
-ipcMain.handle('read-file', async (event, filePath) => {
+ipcMain.on('close-window', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.close()
+  }
+})
+
+ipcMain.handle('zip-directory', async (event, nodes) => {
   try {
-    const content = await fs.readFile(filePath, 'utf-8')
-    return { success: true, content }
+    // Create zip file in temp directory (will be cleaned up on app close)
+    const tempDir = os.tmpdir()
+    const zipPath = path.resolve(tempDir, `clipboard-${Date.now()}.zip`)
+    const output = createWriteStream(zipPath)
+    const archive = archiver('zip', { zlib: { level: 9 } })
+
+    return new Promise((resolve, reject) => {
+      output.on('close', async () => {
+        // Track temp file for cleanup
+        tempZipFiles.add(zipPath)
+        
+        try {
+          // Ensure file exists and is fully written
+          await fs.access(zipPath)
+          
+          // Copy zip file path to clipboard as text
+          clipboard.writeText(zipPath)
+          
+          console.log('Copied zip file path to clipboard:', zipPath)
+          resolve({ success: true, path: zipPath })
+        } catch (clipboardError) {
+          console.error('Error copying to clipboard:', clipboardError)
+          reject(clipboardError)
+        }
+      })
+
+      archive.on('error', (err) => {
+        reject(err)
+      })
+
+      archive.pipe(output)
+
+      // Helper function to add files recursively
+      const addNodeToArchive = (node, parentPath = '') => {
+        const currentPath = parentPath ? `${parentPath}/${node.name}` : node.name
+        
+        if (node.type === 'file') {
+          // Add file content from memory
+          if (node.content !== undefined) {
+            archive.append(node.content, { name: currentPath })
+          } else if (node.filePath) {
+            // Read from disk if content not in memory
+            archive.file(node.filePath, { name: currentPath })
+          }
+        } else if (node.type === 'folder' && node.children) {
+          node.children.forEach(child => addNodeToArchive(child, currentPath))
+        }
+      }
+
+      // Add all nodes to archive
+      nodes.forEach(node => addNodeToArchive(node))
+      
+      archive.finalize()
+    })
   } catch (error) {
-    console.error(`Error reading file ${filePath}:`, error)
+    console.error('Error creating zip:', error)
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('show-item-in-folder', async (event, filePath) => {
+  try {
+    shell.showItemInFolder(filePath)
+    return { success: true }
+  } catch (error) {
+    console.error('Error showing item in folder:', error)
     return { success: false, error: error.message }
   }
 })
@@ -119,6 +190,16 @@ function createWindow () {
     
     win.on('closed', () => {
       unwatchAll()
+      // Clean up temp zip files
+      tempZipFiles.forEach(zipPath => {
+        try {
+          unlinkSync(zipPath)
+          console.log('Deleted temp zip file:', zipPath)
+        } catch (err) {
+          console.error(`Error deleting temp zip file ${zipPath}:`, err)
+        }
+      })
+      tempZipFiles.clear()
       mainWindow = null
     })
 
